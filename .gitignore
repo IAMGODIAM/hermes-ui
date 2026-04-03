@@ -1,5 +1,27 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 .vite/
+
+# Logs
 *.log
+
+# OS files
 .DS_Store
+
+# Environment variables
+.env
+.env.*
+
+# Keys and certificates
+*.key
+*.pem
+*.p12
+
+# Google credentials and tokens
+google_token.json
+google_credentials.json
+google_client_secret.json
+google-ads.yaml
