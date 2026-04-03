@@ -30,6 +30,8 @@ export const icons = {
   hermie: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M9 11C9 11 10 9 11 9M17 11C17 11 18 9 19 9" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><path d="M10 16C10 16 12 19 14 19C16 19 18 16 18 16" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>`,
   
   user: `<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="10" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M6 24C6 19 10 16 14 16C18 16 22 19 22 24" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+
+  gear: `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M9 1.5V3.5M9 14.5V16.5M16.5 9H14.5M3.5 9H1.5M14.3 3.7L12.9 5.1M5.1 12.9L3.7 14.3M14.3 14.3L12.9 12.9M5.1 5.1L3.7 3.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
 }
 
 export function getToolIcon(toolName: string): string {

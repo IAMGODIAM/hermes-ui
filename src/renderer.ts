@@ -6,6 +6,7 @@ import { getTextLayout, getTextLayoutWithLines, shrinkwrapWidth } from './pretex
 import { store, type ChatMessage, type ToolExecution } from './state'
 import { theme } from './theme'
 import { icons, getToolIcon } from './icons'
+import { sendMessage, stopGeneration, startHealthMonitor, configure } from './api'
 
 // ─── DOM Element Pools ──────────────────────────────────────────
 
@@ -139,8 +140,17 @@ export function initRenderer(): void {
   title.textContent = 'Hermie'
   const subtitle = createElement('div', 'header-subtitle', headerLeft)
   subtitle.textContent = 'Visionary Intelligence'
-  headerStatus = createElement('div', 'header-status', header)
+  const headerRight = createElement('div', 'header-right', header)
+  headerStatus = createElement('div', 'header-status', headerRight) as HTMLDivElement
   headerStatus.textContent = 'Connecting...'
+  const gearBtn = createElement('button', 'header-gear', headerRight)
+  gearBtn.innerHTML = icons.gear
+  gearBtn.addEventListener('click', () => {
+    // Lazy-load to avoid circular import
+    if ((window as any).__showSettingsDialog) {
+      (window as any).__showSettingsDialog()
+    }
+  })
   
   // Chat area
   const chatArea = createElement('div', 'chat-area', app)
@@ -213,8 +223,14 @@ function handleKeyDown(e: KeyboardEvent): void {
 }
 
 function handleSend(): void {
+  // If streaming, stop generation
+  if (store.getState().isStreaming) {
+    stopGeneration()
+    return
+  }
+
   const text = store.getState().inputText.trim()
-  if (!text || store.getState().isStreaming) return
+  if (!text) return
   
   // Add user message
   store.addMessage({
@@ -227,8 +243,8 @@ function handleSend(): void {
   inputField.value = ''
   autoResizeInput()
   
-  // Simulate agent response (will be replaced by WebSocket)
-  simulateResponse(text)
+  // Send to Hermes gateway
+  sendToAgent(text)
 }
 
 function handleResize(): void {
@@ -435,83 +451,80 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-// ─── Simulation (replaced by WebSocket in production) ───────────
+// ─── Agent Communication ────────────────────────────────────────
 
-async function simulateResponse(userText: string): Promise<void> {
+async function sendToAgent(userText: string): Promise<void> {
   store.update({ agentStatus: 'thinking', isStreaming: true })
-  
-  // Simulate thinking delay
-  await sleep(600 + Math.random() * 800)
-  
-  // Add assistant message (streaming)
+
+  // Create assistant message placeholder
   const msg = store.addMessage({
     role: 'assistant',
     content: '',
     status: 'streaming',
   })
-  
-  store.update({ agentStatus: 'responding' })
-  
-  // Simulate tool execution for certain queries
-  if (userText.toLowerCase().includes('search') || userText.toLowerCase().includes('find') || userText.toLowerCase().includes('look')) {
-    const tool = store.addToolToMessage(msg.id, {
-      name: 'search_files',
-      displayName: 'search_files',
-      status: 'running',
-    })
-    await sleep(800)
-    store.updateTool(msg.id, tool.id, {
-      status: 'complete',
-      endTime: Date.now(),
-      result: '{"matches": [{"file": "src/main.ts", "line": 42}]}',
-    })
-  }
-  
-  if (userText.toLowerCase().includes('file') || userText.toLowerCase().includes('read') || userText.toLowerCase().includes('code')) {
-    const tool = store.addToolToMessage(msg.id, {
-      name: 'read_file',
-      displayName: 'read_file',
-      status: 'running',
-    })
-    await sleep(500)
-    store.updateTool(msg.id, tool.id, {
-      status: 'complete',
-      endTime: Date.now(),
-      result: '{"content": "// file contents here...", "total_lines": 150}',
-    })
-  }
-  
-  // Stream response text
-  const response = generateResponse(userText)
-  for (let i = 0; i < response.length; i++) {
-    store.appendToStream(msg.id, response[i])
-    if (response[i] === ' ' || response[i] === '\n') {
-      await sleep(8 + Math.random() * 15)
-    }
-  }
-  
-  store.updateMessage(msg.id, { status: 'complete' })
-  store.update({ agentStatus: 'idle', isStreaming: false })
-}
 
-function generateResponse(input: string): string {
-  const responses = [
-    "I've analyzed the situation. Here's what I see:\n\nThe core issue is structural, not tactical. You're trying to solve a systems problem with a point solution. Let me lay out the strategic frame:\n\n1. The bottleneck isn't where you think it is\n2. The leverage point is upstream of execution\n3. The correct move is to architect the constraint away, not power through it\n\nShall I draft the full execution plan?",
-    
-    "Done. I've reviewed the codebase and here's the assessment:\n\nThe architecture is sound but the implementation has drift. Three files need attention, and there's a latent bug in the event handling that will surface under load.\n\nI can fix all three issues in one pass. The changes are safe and backwards-compatible.",
-    
-    "Interesting question. Let me think through this carefully.\n\nThe conventional wisdom here is actually wrong. Most people optimize for the wrong variable. The real constraint is time-to-feedback, not throughput.\n\nIf you restructure the pipeline to prioritize signal over volume, you get a 3x improvement in decision quality with less effort. It's counterintuitive but the math is clear.",
-    
-    "Understood. Moving on this now.\n\nI'll handle the research, synthesis, and draft. You'll get a clean deliverable — no fluff, no filler, just the strategic core and the execution steps.\n\nExpect the first version within the hour. I'll flag any decision points that need your input rather than guessing.",
-    
-    "This is the right move at the right time. Here's why:\n\nThe market window is narrow but real. The technology is mature enough to build on but early enough that positioning matters. First-mover advantage in this specific niche is worth more than perfection.\n\nShip the minimum credible version. Iterate from real feedback. Don't let perfect be the enemy of deployed.",
-  ]
-  
-  return responses[Math.floor(Math.random() * responses.length)]
-}
+  let currentToolId: string | null = null
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  await sendMessage(userText, {
+    onToken(token: string) {
+      store.update({ agentStatus: 'responding' })
+      // If there was a running tool, mark it complete
+      if (currentToolId) {
+        store.updateTool(msg.id, currentToolId, {
+          status: 'complete',
+          endTime: Date.now(),
+        })
+        currentToolId = null
+      }
+      store.appendToStream(msg.id, token)
+    },
+
+    onToolProgress(name: string, emoji: string) {
+      store.update({ agentStatus: 'executing' })
+      // Mark previous tool complete if still running
+      if (currentToolId) {
+        store.updateTool(msg.id, currentToolId, {
+          status: 'complete',
+          endTime: Date.now(),
+        })
+      }
+      const tool = store.addToolToMessage(msg.id, {
+        name,
+        displayName: `${emoji} ${name}`,
+        status: 'running',
+      })
+      currentToolId = tool.id
+    },
+
+    onComplete(_fullText: string) {
+      // Mark any remaining tool complete
+      if (currentToolId) {
+        store.updateTool(msg.id, currentToolId, {
+          status: 'complete',
+          endTime: Date.now(),
+        })
+      }
+      store.updateMessage(msg.id, { status: 'complete' })
+      store.update({ agentStatus: 'idle', isStreaming: false })
+    },
+
+    onError(error: string) {
+      // Mark any remaining tool as error
+      if (currentToolId) {
+        store.updateTool(msg.id, currentToolId, {
+          status: 'error',
+          endTime: Date.now(),
+          result: error,
+        })
+      }
+      if (!msg.content && store.getState().messages.find(m => m.id === msg.id)?.content === '') {
+        // No content received — show error in the bubble
+        store.appendToStream(msg.id, `Connection error: ${error}`)
+      }
+      store.updateMessage(msg.id, { status: 'error' })
+      store.update({ agentStatus: 'idle', isStreaming: false })
+    },
+  })
 }
 
 // ─── Styles ─────────────────────────────────────────────────────
@@ -581,6 +594,28 @@ function injectStyles(): void {
       color: ${theme.colors.textMuted};
       letter-spacing: 0.5px;
       text-transform: uppercase;
+    }
+    
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: ${theme.space.md}px;
+    }
+    
+    .header-gear {
+      background: none;
+      border: none;
+      color: ${theme.colors.textMuted};
+      cursor: pointer;
+      padding: 4px;
+      border-radius: ${theme.radius.sm}px;
+      transition: color ${theme.transition.fast};
+      display: flex;
+      align-items: center;
+    }
+    
+    .header-gear:hover {
+      color: ${theme.colors.textPrimary};
     }
     
     .header-status {
@@ -1043,6 +1078,187 @@ function injectStyles(): void {
       font-size: 15px;
       max-width: 400px;
       line-height: 1.6;
+    }
+    
+    .welcome-config-btn {
+      margin-top: ${theme.space.md}px;
+      padding: 8px 20px;
+      border-radius: ${theme.radius.lg}px;
+      border: 1px solid ${theme.colors.border};
+      background: ${theme.colors.bgElevated};
+      color: ${theme.colors.textSecondary};
+      font-size: 13px;
+      cursor: pointer;
+      transition: all ${theme.transition.fast};
+    }
+    
+    .welcome-config-btn:hover {
+      border-color: ${theme.colors.agentGoldDim};
+      color: ${theme.colors.agentGold};
+    }
+    
+    /* ─── Settings Dialog ─── */
+    .settings-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      animation: fadeIn 150ms ease-out;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    
+    .settings-panel {
+      width: 420px;
+      max-width: 90vw;
+      background: ${theme.colors.bgSurface};
+      border: 1px solid ${theme.colors.border};
+      border-radius: ${theme.radius.xl}px;
+      overflow: hidden;
+      animation: slideUp 200ms ease-out;
+    }
+    
+    @keyframes slideUp {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: ${theme.space.lg}px ${theme.space.xl}px;
+      border-bottom: 1px solid ${theme.colors.border};
+    }
+    
+    .settings-title {
+      font-weight: 600;
+      font-size: 15px;
+    }
+    
+    .settings-close {
+      background: none;
+      border: none;
+      color: ${theme.colors.textMuted};
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px;
+      line-height: 1;
+    }
+    
+    .settings-close:hover {
+      color: ${theme.colors.textPrimary};
+    }
+    
+    .settings-body {
+      padding: ${theme.space.xl}px;
+      display: flex;
+      flex-direction: column;
+      gap: ${theme.space.lg}px;
+    }
+    
+    .settings-label {
+      display: flex;
+      flex-direction: column;
+      gap: ${theme.space.xs}px;
+      font-size: 13px;
+      color: ${theme.colors.textSecondary};
+    }
+    
+    .settings-input {
+      padding: 10px 14px;
+      border-radius: ${theme.radius.md}px;
+      border: 1px solid ${theme.colors.border};
+      background: ${theme.colors.bg};
+      color: ${theme.colors.textPrimary};
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      outline: none;
+      transition: border-color ${theme.transition.fast};
+    }
+    
+    .settings-input:focus {
+      border-color: ${theme.colors.agentGoldDim};
+    }
+    
+    .settings-hint {
+      font-size: 11px;
+      color: ${theme.colors.textMuted};
+    }
+    
+    .settings-status {
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: ${theme.radius.md}px;
+      min-height: 36px;
+    }
+    
+    .settings-status.testing {
+      color: ${theme.colors.textMuted};
+    }
+    
+    .settings-status.success {
+      color: ${theme.colors.success};
+      background: rgba(52, 199, 89, 0.08);
+    }
+    
+    .settings-status.error {
+      color: ${theme.colors.error};
+      background: rgba(255, 69, 58, 0.08);
+    }
+    
+    .settings-footer {
+      display: flex;
+      gap: ${theme.space.sm}px;
+      justify-content: flex-end;
+      padding: ${theme.space.lg}px ${theme.space.xl}px;
+      border-top: 1px solid ${theme.colors.border};
+    }
+    
+    .settings-btn {
+      padding: 8px 20px;
+      border-radius: ${theme.radius.md}px;
+      border: 1px solid ${theme.colors.border};
+      font-size: 13px;
+      cursor: pointer;
+      transition: all ${theme.transition.fast};
+    }
+    
+    .settings-btn.secondary {
+      background: ${theme.colors.bgElevated};
+      color: ${theme.colors.textSecondary};
+    }
+    
+    .settings-btn.secondary:hover {
+      border-color: ${theme.colors.textMuted};
+    }
+    
+    .settings-btn.primary {
+      background: ${theme.colors.agentGold};
+      color: ${theme.colors.bg};
+      border-color: ${theme.colors.agentGold};
+      font-weight: 500;
+    }
+    
+    .settings-btn.primary:hover {
+      background: ${theme.colors.agentGoldDim};
+      border-color: ${theme.colors.agentGoldDim};
+    }
+    
+    /* ─── Error message bubble ─── */
+    .msg-row .msg-bubble.error-bubble {
+      border-color: rgba(255, 69, 58, 0.3);
+    }
+    
+    .msg-row.msg-agent .msg-bubble.error-bubble .text-line {
+      color: ${theme.colors.error};
+      opacity: 0.8;
     }
   `
   document.head.appendChild(style)
